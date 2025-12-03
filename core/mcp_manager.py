@@ -1,4 +1,10 @@
-class MCPToolCaller:
+"""todo:
+    这里不应该是一个 MCP Tool Caller， 而是一个 MCP Server 的调用器。可以管理 Agent 连接的 Server 连接。
+"""
+import asyncio
+from typing import Dict, Any
+
+class McpManager:
     """MCP工具调用器"""
     
     async def analyze_image(self, image_data: bytes) -> Dict[str, Any]:

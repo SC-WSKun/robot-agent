@@ -6,7 +6,7 @@ from typing import Dict, Any, Optional, Callable, List
 from dataclasses import dataclass
 from abc import ABC, abstractmethod
 from core.camera import CameraSensor
-from core.mcp-caller import MCPToolCaller
+from core.mcp_manager import McpManager
 
 class AgentState(Enum):
     """代理状态枚举"""
@@ -40,7 +40,7 @@ class RobotAgent:
         
         # 传感器和工具
         self.camera = CameraSensor()
-        self.mcp_tool = MCPToolCaller()
+        self.mcp_tool = McpManager()
         
         # 任务管理
         self.task_queue: List[Task] = []
