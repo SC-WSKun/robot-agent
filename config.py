@@ -1,0 +1,1 @@
+VIDEO_DEV="video0"

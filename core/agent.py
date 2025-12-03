@@ -5,6 +5,8 @@ from enum import Enum
 from typing import Dict, Any, Optional, Callable, List
 from dataclasses import dataclass
 from abc import ABC, abstractmethod
+from core.camera import CameraSensor
+from core.mcp-caller import MCPToolCaller
 
 class AgentState(Enum):
     """代理状态枚举"""
@@ -23,19 +25,6 @@ class Task:
     timeout: float = 60.0
     status: str = "pending"  # pending, running, completed, failed, timeout
 
-class CameraSensor:
-    """摄像头传感器模拟类"""
-    
-    async def capture_image(self) -> bytes:
-        """捕获图像数据"""
-        print("[Camera] Capturing image...")
-        # 模拟图像捕获延迟
-        await asyncio.sleep(0.5)
-        # 返回模拟的图像数据
-        return b"image_data_placeholder"
-
-
-
 class RobotAgent:
     """巡检机器人代理主类"""
     
@@ -44,7 +33,7 @@ class RobotAgent:
         初始化机器人代理
         
         Args:
-            patrol_interval: 巡逻间隔时间(秒)
+            patrol_interval: 摄像头检查间隔时间(秒)
         """
         self.state = AgentState.IDLE
         self.patrol_interval = patrol_interval
@@ -254,6 +243,7 @@ class RobotAgent:
                     task = t
                     break
             
+            # 超时取消任务
             if task and current_time - task.created_at > task.timeout:
                 print(f"[Agent] Cancelling timed out task {task_id}")
                 async_task.cancel()
@@ -274,7 +264,7 @@ class RobotAgent:
         print(f"[Agent] Adding task to queue: {task.name} ({task.id})")
         self.task_queue.append(task)
 
-# 使用示例
+# 单测
 async def main():
     """主函数示例"""
     agent = RobotAgent(patrol_interval=30.0)
