@@ -1,1 +1,1 @@
-VIDEO_DEV="video0"
+VIDEO_DEV="/dev/video0"
