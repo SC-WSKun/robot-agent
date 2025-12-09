@@ -16,3 +16,10 @@ uv run pytest -v
 ```bash
 uv run pytest test/test_camera.py::test_camera_initialization -s
 ```
+如果需要运行集成测试，可以使用下面的命令:
+```bash
+# 先设置环境变量
+export RUN_INTEGRATION=1
+# 然后运行测试
+uv run pytest test/test_camera_integration.py -v -s
+```
