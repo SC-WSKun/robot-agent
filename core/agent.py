@@ -5,8 +5,18 @@ from enum import Enum
 from typing import Dict, Any, Optional, Callable, List
 from dataclasses import dataclass
 from abc import ABC, abstractmethod
-from core.camera import CameraSensor
-from core.mcp_manager import McpManager
+
+# 导入 Action 相关类
+from core.action import (
+    BaseAction,
+    ActionContext,
+    ActionResult,
+    ActionMetadata,
+    WatchAction,
+    SpeakAction,
+    AlertAction,
+)
+import config
 
 class AgentState(Enum):
     """代理状态枚举"""
@@ -26,23 +36,27 @@ class Task:
     status: str = "pending"  # pending, running, completed, failed, timeout
 
 class RobotAgent:
-    """巡检机器人代理主类"""
+    """巡检机器人代理主类（重构后的中枢管理器）
     
-    def __init__(self, patrol_interval: float = 30.0):
+    通过 Actions 插槽机制实现能力的灵活扩展
+    """
+    
+    def __init__(self, patrol_interval: float = None):
         """
         初始化机器人代理
         
         Args:
-            patrol_interval: 摄像头检查间隔时间(秒)
+            patrol_interval: 巡逻间隔时间(秒)
         """
         self.state = AgentState.IDLE
-        self.patrol_interval = patrol_interval
+        self.patrol_interval = patrol_interval or config.PATROL_INTERVAL
         
-        # 传感器和工具
-        self.camera = CameraSensor()
-        self.mcp_tool = McpManager()
+        # Actions 插槽
+        self.actions: Dict[str, BaseAction] = {}
+        self.action_metadata: Dict[str, ActionMetadata] = {}
+        self.shared_context: Dict[str, Any] = {}  # Action 间共享的上下文
         
-        # 任务管理
+        # 任务管理（保留）
         self.task_queue: List[Task] = []
         self.running_tasks: Dict[str, asyncio.Task] = {}
         
@@ -51,15 +65,21 @@ class RobotAgent:
         self._task_manager_task: Optional[asyncio.Task] = None
         
         print("[Agent] Robot agent initialized in IDLE state")
+        print("[Agent] Using action-based architecture")
     
     def start(self):
         """启动代理"""
         print("[Agent] Starting robot agent...")
         self.set_state(AgentState.PATROLLING)
-        
+    
     def stop(self):
         """停止代理"""
         print("[Agent] Stopping robot agent...")
+        
+        # 清理所有 Actions
+        for action_name in list(self.actions.keys()):
+            self.unregister_action(action_name)
+        
         self.set_state(AgentState.IDLE)
         
         # 取消所有运行中的任务
@@ -72,6 +92,116 @@ class RobotAgent:
         # 取消所有正在运行的任务
         for task in self.running_tasks.values():
             task.cancel()
+    
+    def register_action(self, name: str, action: BaseAction, config_dict: Dict[str, Any] = None) -> None:
+        """注册并初始化一个 Action
+        
+        Args:
+            name: Action 名称
+            action: Action 实例
+            config_dict: 配置参数
+        """
+        try:
+            print(f"[Agent] Registering action: {name}")
+            
+            # 初始化 Action
+            if config_dict is None:
+                config_dict = {}
+            action.initialize(config_dict)
+            
+            # 存储 Action 和元信息
+            self.actions[name] = action
+            self.action_metadata[name] = action.metadata
+            
+            print(f"[Agent] Action '{name}' registered successfully")
+            
+        except Exception as e:
+            print(f"[Agent] Failed to register action '{name}': {e}")
+            raise
+    
+    def unregister_action(self, name: str) -> None:
+        """注销 Action 并清理资源
+        
+        Args:
+            name: Action 名称
+        """
+        if name in self.actions:
+            print(f"[Agent] Unregistering action: {name}")
+            
+            action = self.actions[name]
+            action.cleanup()
+            
+            del self.actions[name]
+            del self.action_metadata[name]
+            
+            print(f"[Agent] Action '{name}' unregistered")
+    
+    async def execute_action(self, name: str, input_data: Any = None, config_dict: Dict[str, Any] = None) -> ActionResult:
+        """执行指定的 Action
+        
+        Args:
+            name: Action 名称
+            input_data: 输入数据
+            config_dict: 动态配置参数
+            
+        Returns:
+            ActionResult: 执行结果
+        """
+        if name not in self.actions:
+            print(f"[Agent] Action '{name}' not found")
+            return ActionResult(
+                success=False,
+                error=Exception(f"Action '{name}' not registered")
+            )
+        
+        try:
+            # 构造 ActionContext
+            context = ActionContext(
+                agent_state=self.state,
+                input_data=input_data,
+                shared_data=self.shared_context,
+                config=config_dict or {}
+            )
+            
+            # 执行 Action
+            action = self.actions[name]
+            result = await action.execute(context)
+            
+            return result
+            
+        except Exception as e:
+            print(f"[Agent] Error executing action '{name}': {e}")
+            return ActionResult(
+                success=False,
+                error=e
+            )
+    
+    async def execute_action_chain(self, action_names: List[str], input_data: Any = None) -> List[ActionResult]:
+        """按顺序执行多个 Action
+        
+        Args:
+            action_names: Action 名称列表
+            input_data: 初始输入数据
+            
+        Returns:
+            List[ActionResult]: 执行结果列表
+        """
+        results = []
+        current_input = input_data
+        
+        for action_name in action_names:
+            result = await self.execute_action(action_name, current_input)
+            results.append(result)
+            
+            # 如果执行失败，停止后续 Action
+            if not result.success:
+                print(f"[Agent] Action chain stopped at '{action_name}' due to failure")
+                break
+            
+            # 使用当前 Action 的输出作为下一个 Action 的输入
+            current_input = result.output
+        
+        return results
     
     def set_state(self, state: AgentState):
         """设置代理状态"""
@@ -106,17 +236,23 @@ class RobotAgent:
             print("[Agent] Task manager stopped")
     
     async def _patrol_loop(self):
-        """巡逻主循环"""
+        """巡逻主循环（使用 Action 机制）"""
         try:
-            print("[Agent] Entering patrol loop")
+            print("[Agent] Entering patrol loop (action-based)")
             while True:
                 if self.state == AgentState.PATROLLING:
-                    # 捕获图像并分析
-                    image_data = await self.camera.capture_image()
-                    analysis_result = await self.mcp_tool.analyze_image(image_data)
-                    
-                    # 根据分析结果采取行动
-                    await self._handle_analysis_result(analysis_result)
+                    # 执行 watch Action 进行图像理解
+                    if "watch" in self.actions:
+                        result = await self.execute_action("watch")
+                        
+                        if result.success:
+                            # 根据分析结果采取行动
+                            analysis_result = result.output
+                            await self._handle_analysis_result(analysis_result)
+                        else:
+                            print(f"[Agent] Watch action failed: {result.error}")
+                    else:
+                        print("[Agent] Warning: 'watch' action not registered")
                 
                 # 等待下次巡逻
                 await asyncio.sleep(self.patrol_interval)
@@ -138,46 +274,29 @@ class RobotAgent:
             print("[Agent] No emergency detected, continuing patrol")
     
     async def _handle_emergency(self, emergency_data: Dict[str, Any]):
-        """处理紧急情况"""
+        """处理紧急情况（使用 Action 机制）"""
         print(f"[Agent] Emergency detected: {emergency_data}")
         self.set_state(AgentState.ALERT)
         
-        # 创建紧急响应任务
-        task = Task(
-            id=f"emergency_{int(time.time())}",
-            name="Emergency Response",
-            callback=self._execute_emergency_response,
-            created_at=time.time(),
-            timeout=120.0
-        )
+        # 执行 alert Action
+        if "alert" in self.actions:
+            result = await self.execute_action("alert", input_data=emergency_data)
+            if result.success:
+                print("[Agent] Emergency service called successfully")
+            else:
+                print(f"[Agent] Failed to call emergency service: {result.error}")
         
-        # 添加紧急数据到任务
-        task.data = emergency_data
-        self.task_queue.append(task)
+        # 执行 speak Action 进行语音播报
+        if "speak" in self.actions:
+            alert_text = f"检测到紧急情况：{emergency_data.get('description', '未知异常')}"
+            await self.execute_action("speak", input_data=alert_text)
         
         # 切换到响应状态
         self.set_state(AgentState.RESPONDING)
-    
-    async def _execute_emergency_response(self, task: Task):
-        """执行紧急响应"""
-        try:
-            print(f"[Agent] Executing emergency response for task {task.id}")
-            
-            success = await self.mcp_tool.call_emergency_service(task.data)
-            if success:
-                print(f"[Agent] Emergency service called successfully for task {task.id}")
-                task.status = "completed"
-            else:
-                print(f"[Agent] Failed to call emergency service for task {task.id}")
-                task.status = "failed"
-                
-        except Exception as e:
-            print(f"[Agent] Error executing emergency response: {e}")
-            task.status = "failed"
         
-        finally:
-            # 完成后回到巡逻状态
-            self.set_state(AgentState.PATROLLING)
+        # 稍后回到巡逻状态
+        await asyncio.sleep(5.0)
+        self.set_state(AgentState.PATROLLING)
     
     async def _task_manager(self):
         """任务管理器"""
@@ -264,10 +383,17 @@ class RobotAgent:
         print(f"[Agent] Adding task to queue: {task.name} ({task.id})")
         self.task_queue.append(task)
 
-# 单测
+# 示例：使用 Action 机制的 main 函数
 async def main():
-    """主函数示例"""
+    """主函数示例（使用 Action 机制）"""
     agent = RobotAgent(patrol_interval=30.0)
+    
+    # 注册 Actions
+    agent.register_action("watch", WatchAction())
+    agent.register_action("speak", SpeakAction())
+    agent.register_action("alert", AlertAction())
+    
+    # 启动代理
     agent.start()
     
     # 运行一段时间后停止
